@@ -44,6 +44,7 @@ export class Editor {
 
     this.onSubmit = null;
     this.onChange = null;
+    this.onTab = null;
 
     // Input history (up/down arrow)
     this._history = [];
@@ -140,6 +141,10 @@ export class Editor {
 
     // Tab — trigger autocomplete
     if (data === '\t') {
+      // Allow parent UI to consume Tab (e.g. mode switch) when editor is empty
+      if (this.getValue().trim() === '' && this.onTab?.() === true) {
+        return;
+      }
       this._triggerAutocomplete();
       this.tui?.requestRender();
       return;
@@ -440,7 +445,7 @@ export class Editor {
 
     // Hint line
     lines.push(truncateToWidth(
-      chalk.dim(' Enter:send  Alt+Enter:newline  Tab:autocomplete  ↑↓:history'),
+      chalk.dim(' Enter:send  Alt+Enter:newline  Tab:mode(empty)/autocomplete  ↑↓:history'),
       width
     ));
 

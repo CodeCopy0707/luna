@@ -8,6 +8,11 @@ import chalk from 'chalk';
 export function createDiff(oldContent, newContent, filePath = '') {
   const changes = diffLines(oldContent, newContent);
   const lines = [];
+  const splitDiffLines = (value) => {
+    const chunkLines = value.split('\n');
+    if (chunkLines[chunkLines.length - 1] === '') chunkLines.pop();
+    return chunkLines;
+  };
   
   if (filePath) {
     lines.push(chalk.bold(`--- a/${filePath}`));
@@ -16,11 +21,11 @@ export function createDiff(oldContent, newContent, filePath = '') {
   
   for (const part of changes) {
     if (part.added) {
-      for (const line of part.value.split('\n').filter((_, i, a) => i < a.length - 1 || line !== '')) {
+      for (const line of splitDiffLines(part.value)) {
         lines.push(chalk.green(`+ ${line}`));
       }
     } else if (part.removed) {
-      for (const line of part.value.split('\n').filter((_, i, a) => i < a.length - 1 || line !== '')) {
+      for (const line of splitDiffLines(part.value)) {
         lines.push(chalk.red(`- ${line}`));
       }
     }

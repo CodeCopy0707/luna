@@ -363,43 +363,187 @@ registerTool({
   },
 });
 
-// ─── Tool: WebSearch ──────────────────────────────────────────────────────────
+// ─── Tool: WebSearch (Real-time, no API key) ──────────────────────────────────
+// Uses DuckDuckGo HTML search + direct page fetching for real-time results.
 
 registerTool({
   name: 'web_search',
-  description: 'Search the web using DuckDuckGo. Returns a list of results with titles, URLs, and snippets.',
+  description: 'Search the web in real-time using DuckDuckGo. No API key needed. Returns current results with titles, URLs, and snippets.',
   parameters: {
     type: 'object',
     properties: {
-      query: { type: 'string', description: 'Search query' },
-      max_results: { type: 'number', description: 'Maximum results to return (default: 5)' },
+      query:       { type: 'string',  description: 'Search query' },
+      max_results: { type: 'number',  description: 'Maximum results (default: 8)' },
+      fetch_top:   { type: 'boolean', description: 'Also fetch content from top result (default: false)' },
     },
     required: ['query'],
   },
   readOnly: true,
-  async execute({ query, max_results = 5 }) {
+  async execute({ query, max_results = 8, fetch_top = false }) {
     try {
       const { default: fetch } = await import('node-fetch');
-      const encoded = encodeURIComponent(query);
-      const url = `https://api.duckduckgo.com/?q=${encoded}&format=json&no_html=1&skip_disambig=1`;
-      const res = await fetch(url, { timeout: 10000 });
-      const data = await res.json();
-      
-      const results = [];
-      if (data.AbstractText) {
-        results.push({ title: data.Heading, snippet: data.AbstractText, url: data.AbstractURL });
-      }
-      if (data.RelatedTopics) {
-        for (const topic of data.RelatedTopics.slice(0, max_results - results.length)) {
+
+      // ── Strategy 1: DuckDuckGo Instant Answer API ──────────────────────────
+      const ddgUrl = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1&no_redirect=1`;
+      let results = [];
+
+      try {
+        const ddgRes = await fetch(ddgUrl, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; GemmaAgent/1.0)' },
+          timeout: 8000,
+        });
+        const ddgData = await ddgRes.json();
+
+        if (ddgData.AbstractText) {
+          results.push({
+            title:   ddgData.Heading || query,
+            snippet: ddgData.AbstractText,
+            url:     ddgData.AbstractURL,
+            source:  'ddg-instant',
+          });
+        }
+        if (ddgData.Answer) {
+          results.push({
+            title:   'Direct Answer',
+            snippet: ddgData.Answer,
+            url:     '',
+            source:  'ddg-answer',
+          });
+        }
+        for (const topic of (ddgData.RelatedTopics || []).slice(0, max_results)) {
           if (topic.Text && topic.FirstURL) {
-            results.push({ title: topic.Text.split(' - ')[0], snippet: topic.Text, url: topic.FirstURL });
+            results.push({
+              title:   topic.Text.split(' - ')[0].slice(0, 80),
+              snippet: topic.Text,
+              url:     topic.FirstURL,
+              source:  'ddg-related',
+            });
           }
         }
+      } catch {}
+
+      // ── Strategy 2: DuckDuckGo HTML scrape (if instant API gave < 3 results) ─
+      if (results.length < 3) {
+        try {
+          const htmlUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+          const htmlRes = await fetch(htmlUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36',
+              'Accept-Language': 'en-US,en;q=0.9',
+            },
+            timeout: 10000,
+          });
+          const html = await htmlRes.text();
+
+          // Extract result blocks from DDG HTML
+          const resultRe = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([^<]+)<\/a>[\s\S]*?<a[^>]+class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
+          let m;
+          while ((m = resultRe.exec(html)) !== null && results.length < max_results) {
+            const url     = m[1].startsWith('//') ? 'https:' + m[1] : m[1];
+            const title   = m[2].replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').trim();
+            const snippet = m[3].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&#x27;/g, "'").trim();
+            if (url && title) {
+              results.push({ title, snippet, url, source: 'ddg-html' });
+            }
+          }
+
+          // Fallback: simpler extraction
+          if (results.length < 2) {
+            const linkRe = /href="(https?:\/\/[^"]+)"[^>]*>([^<]{10,80})<\/a>/g;
+            while ((m = linkRe.exec(html)) !== null && results.length < max_results) {
+              if (!m[1].includes('duckduckgo.com')) {
+                results.push({ title: m[2].trim(), snippet: '', url: m[1], source: 'ddg-fallback' });
+              }
+            }
+          }
+        } catch {}
       }
-      return { results: results.slice(0, max_results), query };
+
+      // ── Strategy 3: Fetch top result content ──────────────────────────────
+      let topContent = null;
+      if (fetch_top && results.length > 0 && results[0].url) {
+        try {
+          const pageRes = await fetch(results[0].url, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (compatible; GemmaAgent/1.0)' },
+            timeout: 8000,
+          });
+          const pageHtml = await pageRes.text();
+          topContent = pageHtml
+            .replace(/<script[\s\S]*?<\/script>/gi, '')
+            .replace(/<style[\s\S]*?<\/style>/gi, '')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 3000);
+        } catch {}
+      }
+
+      return {
+        query,
+        results: results.slice(0, max_results),
+        count: Math.min(results.length, max_results),
+        top_content: topContent,
+        timestamp: new Date().toISOString(),
+      };
     } catch (err) {
-      return { error: err.message, query };
+      return { error: err.message, query, results: [] };
     }
+  },
+});
+
+// ─── Tool: WebSearch Deep (fetch multiple pages) ──────────────────────────────
+
+registerTool({
+  name: 'web_search_deep',
+  description: 'Search the web and fetch full content from multiple top results. Use for in-depth research.',
+  parameters: {
+    type: 'object',
+    properties: {
+      query:      { type: 'string', description: 'Search query' },
+      num_pages:  { type: 'number', description: 'Number of pages to fetch content from (default: 3, max: 5)' },
+    },
+    required: ['query'],
+  },
+  readOnly: true,
+  async execute({ query, num_pages = 3 }) {
+    const { default: fetch } = await import('node-fetch');
+
+    // First get search results
+    const searchTool = getTool('web_search');
+    const searchResult = await searchTool.execute({ query, max_results: Math.min(num_pages + 2, 7) });
+
+    if (searchResult.error) return searchResult;
+
+    const urlsToFetch = searchResult.results
+      .filter(r => r.url && r.url.startsWith('http'))
+      .slice(0, Math.min(num_pages, 5));
+
+    // Fetch all pages in parallel
+    const pages = await Promise.all(urlsToFetch.map(async (r) => {
+      try {
+        const res = await fetch(r.url, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; GemmaAgent/1.0)' },
+          timeout: 8000,
+        });
+        const html = await res.text();
+        const text = html
+          .replace(/<script[\s\S]*?<\/script>/gi, '')
+          .replace(/<style[\s\S]*?<\/style>/gi, '')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 2000);
+        return { url: r.url, title: r.title, content: text };
+      } catch (err) {
+        return { url: r.url, title: r.title, content: `(fetch failed: ${err.message})` };
+      }
+    }));
+
+    return {
+      query,
+      pages,
+      timestamp: new Date().toISOString(),
+    };
   },
 });
 

@@ -12,6 +12,7 @@ import { TUI }        from './tui/tui.js';
 import { ProcessTerminal } from './tui/terminal.js';
 import { Text, Markdown, Spacer, Divider, Loader, StatusBar } from './tui/components.js';
 import { Editor }     from './tui/editor.js';
+import { ModeTab, MODES } from './tui/mode_tab.js';
 
 import { Agent, MultiAgentOrchestrator } from './agent.js';
 import { getConfig, setConfig }          from './config.js';
@@ -120,12 +121,42 @@ async function main() {
   const editor = new Editor(tui, { border: THEME.editorBorder });
   tui.addChild(editor);
   tui.setFocus(editor);
+  let agent = null;
+  let runTurn = async () => {};
+  let currentMode = MODES.PLAN;
+
+  // ─── Mode Tab (Plan/Act) ───────────────────────────────────────────────────
+
+  const modeTab = new ModeTab((mode) => {
+    const prevMode = currentMode;
+    currentMode = mode;
+    if (!agent) return;
+
+    agent.setMode(mode);
+
+    if (mode === MODES.ACT && prevMode !== MODES.ACT) {
+      // Capture the plan when switching to ACT mode
+      agent.capturePlan();
+
+      if (agent.hasPendingPlan()) {
+        _insertBeforeEditor(new Text(chalk.cyan('▶ Switching to ACT mode: implementing captured plan...'), 1, 0));
+        void runTurn(
+          'Implement the captured PLAN mode strategy now. Execute step-by-step, use tools and subagents as needed, and report progress with completed changes.',
+          { showUser: false, loaderText: 'Implementing plan...' }
+        );
+      } else {
+        _insertBeforeEditor(new Text(chalk.yellow('⚠ No captured plan found yet. Ask in PLAN mode first, then switch to ACT.'), 1, 0));
+      }
+    }
+    tui.requestRender();
+  });
+  tui.addChild(modeTab);
 
   // ─── Agent ───────────────────────────────────────────────────────────────────
 
   let currentLoader = null;
 
-  const agent = new Agent({
+  agent = new Agent({
     model: cfg.model,
 
     onText: (text) => {
@@ -134,6 +165,11 @@ async function main() {
         _streamingMd.setText(_streamingMd.text + text);
         tui.requestRender();
       }
+    },
+
+    onLog: (msg) => {
+      _insertBeforeEditor(new Text(chalk.dim(msg), 1, 0));
+      tui.requestRender();
     },
 
     onToolStart: (name, args) => {
@@ -259,33 +295,28 @@ async function main() {
     tui.requestRender();
   }
 
-  // ─── Submit handler ──────────────────────────────────────────────────────────
+  runTurn = async (trimmed, { showUser = true, loaderText = 'Thinking...' } = {}) => {
+    if (!trimmed || editor.disableSubmit) return;
 
-  editor.onSubmit = async (value) => {
-    const trimmed = value.trim();
-    if (!trimmed) return;
+    if (showUser) {
+      _insertBeforeEditor(new Text(
+        chalk.dim('─'.repeat(Math.min(terminal.columns, 80))),
+        0, 0
+      ));
+      _insertBeforeEditor(new Markdown(
+        `**${THEME.userLabel}**\n\n${trimmed}`,
+        1, 0, THEME.md, THEME.userBg
+      ));
+    }
 
-    // Show user message
-    _insertBeforeEditor(new Text(
-      chalk.dim('─'.repeat(Math.min(terminal.columns, 80))),
-      0, 0
-    ));
-    _insertBeforeEditor(new Markdown(
-      `**${THEME.userLabel}**\n\n${trimmed}`,
-      1, 0, THEME.md, THEME.userBg
-    ));
-
-    // Handle slash commands
     if (trimmed.startsWith('/')) {
       await handleCommand(trimmed, agent, tui, editor, terminal);
       tui.requestRender();
       return;
     }
 
-    // Start assistant response
     editor.disableSubmit = true;
 
-    // Create streaming markdown component
     _streamingMd = new Markdown('', 1, 0, THEME.md, THEME.assistantBg);
     _insertBeforeEditor(new Text(
       chalk.bold.green('Gemma'),
@@ -293,8 +324,7 @@ async function main() {
     ));
     _insertBeforeEditor(_streamingMd);
 
-    // Loader
-    const loader = new Loader(tui, (s) => chalk.cyan(s), (s) => chalk.dim(s), 'Thinking...');
+    const loader = new Loader(tui, (s) => chalk.cyan(s), (s) => chalk.dim(s), loaderText);
     _insertBeforeEditor(loader);
     loader.start();
 
@@ -309,6 +339,17 @@ async function main() {
       editor.disableSubmit = false;
       tui.requestRender();
     }
+  };
+
+  // ─── Submit handler ──────────────────────────────────────────────────────────
+
+  editor.onSubmit = async (value) => {
+    const trimmed = value.trim();
+    await runTurn(trimmed, { showUser: true, loaderText: 'Thinking...' });
+  };
+  editor.onTab = () => {
+    modeTab.toggle();
+    return true;
   };
 
   // ─── Auto-start Telegram ─────────────────────────────────────────────────────
@@ -390,11 +431,15 @@ async function handleCommand(input, agent, tui, editor, terminal) {
         chalk.white('/cost') + chalk.dim('                    Show token usage and cost'),
         chalk.white('/memory [query]') + chalk.dim('          List or search memories'),
         chalk.white('/tasks') + chalk.dim('                   List all tasks'),
+        chalk.white('/agents') + chalk.dim('                  Show all agent task statuses'),
+        chalk.white('/spawn <id> <task>') + chalk.dim('       Spawn a specialist agent directly'),
         chalk.white('/brainstorm [topic]') + chalk.dim('      Multi-persona brainstorm'),
         chalk.white('/worker') + chalk.dim('                  Auto-implement TODO tasks'),
-        chalk.white('/telegram <token> <id>') + chalk.dim('   Start Telegram bridge'),
-        chalk.white('/multi <task>') + chalk.dim('            Run multi-agent pipeline'),
+        chalk.white('/multi <task>') + chalk.dim('            Run full Codebuff-style pipeline'),
+        chalk.white('/telegram [token] [id]') + chalk.dim('   Start Telegram bridge'),
         chalk.white('/exit') + chalk.dim('                    Exit Gemma Agent'),
+        '',
+        chalk.dim('Agents: file-picker, planner, editor, reviewer, researcher, tester, git-committer, debugger'),
       ].join('\n'));
       break;
 
@@ -630,15 +675,74 @@ async function handleCommand(input, agent, tui, editor, terminal) {
           permissionCallback: agent.permissionCallback,
         });
         const result = await orchestrator.runPipeline(taskDesc, {
-          onProgress: (msg) => loader.setMessage(msg),
+          onProgress: (msg) => {
+            loader.setMessage(msg.replace(/\x1b\[[0-9;]*m/g, '').trim());
+            print(chalk.dim(msg));
+            tui.requestRender();
+          },
         });
         loader.stop();
         tui.removeChild(loader);
-        print(chalk.green('✓ Pipeline complete!\n\n') + chalk.cyan('── Review ──\n\n') + result.review);
+        print(
+          chalk.green('✓ Pipeline complete!\n\n') +
+          chalk.cyan('── Review ──\n\n') + result.review + '\n\n' +
+          chalk.cyan('── Tests ──\n\n') + result.tests
+        );
       } catch (err) {
         loader.stop();
         tui.removeChild(loader);
         print(chalk.red(`✗ Pipeline failed: ${err.message}`));
+      }
+      editor.disableSubmit = false;
+      break;
+    }
+
+    case 'agents': {
+      // Show all running/completed agent tasks
+      const status = agent.getAgentStatus?.() || 'No agent tasks.';
+      const cost   = agent.getCostEstimate?.();
+      const lines  = [chalk.cyan('🤖 Agent Tasks:\n'), status];
+      if (cost) {
+        lines.push('');
+        lines.push(chalk.dim(`Total cost: $${cost.estimated_usd} USD  (in:${cost.input_tokens} out:${cost.output_tokens})`));
+      }
+      print(lines.join('\n'));
+      break;
+    }
+
+    case 'spawn': {
+      // /spawn <agent_id> <task...>
+      const agentId = args[0];
+      const spawnTask = args.slice(1).join(' ');
+      if (!agentId || !spawnTask) {
+        print(chalk.yellow('Usage: /spawn <agent_id> <task>\nAgents: file-picker, planner, editor, reviewer, researcher, tester, git-committer, debugger'));
+        break;
+      }
+      print(chalk.cyan(`🚀 Spawning ${agentId}: ${spawnTask}\n`));
+      const spawnLoader = new Loader(tui, (s) => chalk.cyan(s), (s) => chalk.dim(s), `Running ${agentId}...`);
+      const spawnIdx = tui.children.indexOf(editor);
+      tui.children.splice(spawnIdx, 0, spawnLoader);
+      spawnLoader.start();
+      editor.disableSubmit = true;
+      try {
+        const { AgentManager } = await import('./agents/manager.js');
+        const { getConfig: gc } = await import('./config.js');
+        const mgr = new AgentManager({
+          model: agent.model || gc().model,
+          onText:      () => {},
+          onToolStart: (n) => spawnLoader.setMessage(`⚙ ${n}`),
+          onToolEnd:   () => {},
+          onLog:       (m) => { print(chalk.dim(m)); tui.requestRender(); },
+          permissionCallback: agent.permissionCallback,
+        });
+        const result = await mgr.run(agentId, spawnTask);
+        spawnLoader.stop();
+        tui.removeChild(spawnLoader);
+        print(chalk.green(`✓ ${agentId} done\n\n`) + (result.text || result.error || ''));
+      } catch (err) {
+        spawnLoader.stop();
+        tui.removeChild(spawnLoader);
+        print(chalk.red(`✗ ${err.message}`));
       }
       editor.disableSubmit = false;
       break;
