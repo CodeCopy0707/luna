@@ -23,6 +23,14 @@ export async function startTelegramBridge(token, chatId, agent, { onLog } = {}) 
     return;
   }
   
+  // Force stop any phantom instance
+  if (_bot) {
+    try {
+      await _bot.stopPolling();
+      await new Promise(r => setTimeout(r, 1000)); // Wait for Telegram to acknowledge
+    } catch (e) {}
+  }
+
   try {
     const { default: TelegramBot } = await import('node-telegram-bot-api');
     
@@ -39,6 +47,7 @@ export async function startTelegramBridge(token, chatId, agent, { onLog } = {}) 
     onLog?.(chalk.green(`✓ Telegram bridge started. Authorized chat: ${chatId}`));
     
     _bot.on('message', async (msg) => {
+      // ... same message logic ...
       const fromChatId = String(msg.chat.id);
       
       if (fromChatId !== _authorizedChatId) {

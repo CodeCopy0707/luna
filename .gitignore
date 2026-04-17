@@ -4,3 +4,23 @@ node_modules/
 .DS_Store
 brainstorm_outputs/
 .gemma-agent/
+payload.json
+
+# IDEs
+.vscode/
+.idea/
+
+# Build and Coverage
+dist/
+build/
+coverage/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Scratch and Generated
+fashion-hub/
+empty.html
+test.js

@@ -9,6 +9,7 @@
 import { AgentRunner } from './runner.js';
 import { getAgentDef, listAgentDefs } from './registry.js';
 import { getConfig } from '../config.js';
+import { WorkerPool } from '../workers/pool.js';
 
 let _taskIdCounter = 1;
 
@@ -79,11 +80,31 @@ export class AgentManager {
     return result;
   }
 
-  // ─── Run multiple agents in parallel ────────────────────────────────────────
+  // ─── Run multiple agents in parallel (via WorkerPool) ────────────────────────
 
   async runParallel(tasks) {
     // tasks = [{ agentId, task, options? }, ...]
-    return Promise.all(tasks.map(t => this.run(t.agentId, t.task, t.options || {})));
+    if (tasks.length <= 1) {
+      return Promise.all(tasks.map(t => this.run(t.agentId, t.task, t.options || {})));
+    }
+
+    const cfg = getConfig();
+    const pool = new WorkerPool({ maxConcurrent: cfg.max_parallel_workers ?? 4 });
+
+    const results = new Array(tasks.length);
+
+    tasks.forEach((t, idx) => {
+      pool.addTask(async ({ taskId, sharedResults }) => {
+        const result = await this.run(t.agentId, t.task, t.options || {});
+        // Share result so other workers can access it
+        sharedResults.set(t.agentId, result);
+        results[idx] = result;
+        return result;
+      }, t.priority || 0);
+    });
+
+    await pool.run();
+    return results;
   }
 
   // ─── Codebuff-style pipeline ─────────────────────────────────────────────────

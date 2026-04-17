@@ -18,8 +18,8 @@ const BUILTIN_AGENTS = {
     id: 'orchestrator',
     displayName: '🎯 Orchestrator',
     description: 'Breaks complex tasks into subtasks and delegates to specialist agents',
-    toolNames: ['task_create', 'task_update', 'task_list', 'task_get', 'bash', 'read_file'],
-    spawnableAgents: ['file-picker', 'planner', 'editor', 'reviewer', 'researcher', 'tester'],
+    toolNames: ['task_create', 'task_update', 'task_list', 'task_get', 'bash', 'read_file', 'bucket_create', 'bucket_list', 'bucket_get', 'bucket_complete_task', 'shared_memory_write', 'shared_memory_read', 'shared_memory_list'],
+    spawnableAgents: ['file-picker', 'planner', 'editor', 'reviewer', 'researcher', 'tester', 'debugger', 'optimizer', 'architect', 'doc-writer', 'refactorer', 'security-auditor'],
     maxIterations: 30,
     instructionsPrompt: `You are the Orchestrator Agent. Your job is to:
 1. Analyze the user's request and break it into clear subtasks
@@ -187,6 +187,118 @@ Write commit messages that explain WHY, not just what.`,
 5. Verify the fix works and doesn't break other things
 
 Be systematic: hypothesize → test → confirm. Don't guess.`,
+  },
+
+  // ── Optimizer ───────────────────────────────────────────────────────────────
+  optimizer: {
+    id: 'optimizer',
+    displayName: '⚡ Optimizer',
+    description: 'Analyzes and optimizes code for performance, size, and efficiency',
+    toolNames: ['read_file', 'read_files', 'edit_file', 'bash', 'grep', 'glob', 'run_tests'],
+    spawnableAgents: ['tester'],
+    maxIterations: 15,
+    instructionsPrompt: `You are the Optimizer Agent. Your job is to:
+1. Profile the codebase — find bottlenecks, large bundles, redundant code
+2. Optimize hot paths for speed (algorithmic improvements, caching, memoization)
+3. Reduce bundle size (tree-shaking, lazy loading, dead code removal)
+4. Improve memory usage (avoid leaks, reduce allocations)
+5. Run benchmarks before and after to measure improvement
+
+Rules:
+- Never sacrifice correctness for speed
+- Always run tests after optimization to verify no regressions
+- Document what was changed and why`,
+  },
+
+  // ── Architect ───────────────────────────────────────────────────────────────
+  architect: {
+    id: 'architect',
+    displayName: '🏛️ Architect',
+    description: 'Designs system architecture, refactors, and restructures code',
+    toolNames: ['read_file', 'read_files', 'list_dir', 'glob', 'grep', 'bash', 'write_file', 'edit_file'],
+    spawnableAgents: ['file-picker', 'reviewer'],
+    maxIterations: 20,
+    instructionsPrompt: `You are the Architect Agent. Your job is to:
+1. Analyze the full codebase structure and dependencies
+2. Identify architectural issues: tight coupling, circular deps, God objects
+3. Design clean module boundaries and interfaces
+4. Refactor code into well-separated concerns
+5. Create or update architectural documentation
+
+Design principles:
+- Single Responsibility — each module does one thing well
+- Dependency Inversion — depend on abstractions, not concretions
+- Open/Closed — open for extension, closed for modification
+- DRY — eliminate duplication ruthlessly`,
+  },
+
+  // ── Doc Writer ──────────────────────────────────────────────────────────────
+  'doc-writer': {
+    id: 'doc-writer',
+    displayName: '📝 Doc Writer',
+    description: 'Writes and updates documentation, READMEs, and code comments',
+    toolNames: ['read_file', 'read_files', 'write_file', 'edit_file', 'glob', 'grep', 'list_dir'],
+    spawnableAgents: [],
+    maxIterations: 15,
+    instructionsPrompt: `You are the Doc Writer Agent. Your job is to:
+1. Read the codebase to understand what it does
+2. Write or update README.md with clear setup, usage, and API docs
+3. Add JSDoc/docstrings to undocumented functions and classes
+4. Create architecture diagrams in text/markdown
+5. Write inline comments for complex logic
+
+Style guidelines:
+- Be concise but comprehensive
+- Include code examples for APIs
+- Keep docs close to the code they describe
+- Use markdown formatting for readability`,
+  },
+
+  // ── Refactorer ──────────────────────────────────────────────────────────────
+  refactorer: {
+    id: 'refactorer',
+    displayName: '🔄 Refactorer',
+    description: 'Refactors code for cleanliness while preserving behavior',
+    toolNames: ['read_file', 'read_files', 'edit_file', 'regex_replace', 'bash', 'grep', 'glob', 'run_tests', 'checkpoint_create'],
+    spawnableAgents: ['tester'],
+    maxIterations: 20,
+    instructionsPrompt: `You are the Refactorer Agent. Your job is to:
+1. Create a checkpoint before making changes
+2. Identify code smells: duplication, long methods, deep nesting, magic numbers
+3. Apply targeted refactoring patterns (extract method, rename, inline, etc.)
+4. Use regex_replace for bulk renames across files
+5. Run tests after each refactoring step
+6. Ensure all behavior is preserved — zero functional changes
+
+Rules:
+- Small, incremental refactoring steps
+- Run tests after EVERY change
+- If tests fail, rollback to checkpoint immediately`,
+  },
+
+  // ── Security Auditor ────────────────────────────────────────────────────────
+  'security-auditor': {
+    id: 'security-auditor',
+    displayName: '🛡️ Security Auditor',
+    description: 'Audits code for security vulnerabilities and fixes them',
+    toolNames: ['read_file', 'read_files', 'grep', 'glob', 'bash', 'edit_file', 'web_search'],
+    spawnableAgents: [],
+    maxIterations: 15,
+    instructionsPrompt: `You are the Security Auditor Agent. Your job is to:
+1. Scan for common vulnerabilities: injection, XSS, CSRF, auth bypass, path traversal
+2. Check for hardcoded secrets and credentials
+3. Verify input validation and sanitization
+4. Check dependency versions for known CVEs
+5. Fix vulnerabilities with minimal code changes
+6. Write a security report with findings and remediations
+
+Check for:
+- SQL/NoSQL injection
+- Command injection (shell exec with user input)
+- Path traversal (../ in file paths)
+- Insecure deserialization
+- Missing authentication/authorization
+- Hardcoded API keys or passwords`,
   },
 };
 

@@ -1,147 +1,165 @@
 /**
- * tui.js — Main TUI engine with differential rendering
- * Three-strategy rendering: first render, full re-render, differential update
- * Uses CSI 2026 synchronized output for flicker-free updates
+ * tui.js — Differential rendering engine inspired by pi-tui
  */
 
-import { visibleWidth } from './utils.js';
-import { ModeTab } from './mode_tab.js';
+import stripAnsi from 'strip-ansi';
+
+// Unique marker that doesn't render visually but can be detected in the string
+export const CURSOR_MARKER = '\x1b_CURSOR\x1b\\';
 
 export class TUI {
   constructor(terminal) {
     this.terminal = terminal;
     this.children = [];
+    this.topSticky = [];
+    this.bottomSticky = [];
     this._focusedComponent = null;
-    this._prevLines = null;
-    this._prevWidth = -1;
-    this._renderPending = false;
-    this._started = false;
-    this._renderedLineCount = 0;
-    this.onDebug = null;
+    this._lastLines = [];
+    this._isStarted = false;
+    this.scrollOffset = 0;
+
+    this.terminal.onResize = () => {
+      this.fullRender();
+    };
   }
 
-  // ─── Child Management ────────────────────────────────────────────────────────
-
   addChild(component) {
-    this.children.push(component);
-    this.requestRender();
+    if (!this.children.includes(component)) this.children.push(component);
   }
 
   removeChild(component) {
-    const idx = this.children.indexOf(component);
-    if (idx !== -1) this.children.splice(idx, 1);
-    this.requestRender();
+    this.children = this.children.filter(c => c !== component);
+    this.topSticky = this.topSticky.filter(c => c !== component);
+    this.bottomSticky = this.bottomSticky.filter(c => c !== component);
+    if (this._focusedComponent === component) this._focusedComponent = null;
+  }
+
+  stickTop(component) {
+    if (!this.topSticky.includes(component)) this.topSticky.push(component);
+  }
+
+  stickBottom(component) {
+    if (!this.bottomSticky.includes(component)) this.bottomSticky.unshift(component);
   }
 
   setFocus(component) {
-    if (this._focusedComponent && this._focusedComponent !== component) {
-      if ('focused' in this._focusedComponent) this._focusedComponent.focused = false;
-    }
     this._focusedComponent = component;
-    if (component && 'focused' in component) component.focused = true;
-    this.requestRender();
   }
-
-  requestRender() {
-    if (this._renderPending) return;
-    this._renderPending = true;
-    setImmediate(() => {
-      this._renderPending = false;
-      this._render();
-    });
-  }
-
-  // ─── Lifecycle ───────────────────────────────────────────────────────────────
 
   start() {
-    this._started = true;
-    this.terminal.start(
-      (data) => this._handleInput(data),
-      () => this._handleResize()
-    );
+    if (this._isStarted) return;
+    this.terminal.enterRawMode();
     this.terminal.hideCursor();
-    this.terminal.enableBracketedPaste?.();
-    this._render();
+    this.terminal.stdin.on('data', this._handleInput.bind(this));
+    this.terminal.stdin.on('keypress', this._handleKeypress.bind(this));
+    this._isStarted = true;
+    this.fullRender();
   }
 
   stop() {
-    this._started = false;
-    this.terminal.disableBracketedPaste?.();
+    if (!this._isStarted) return;
     this.terminal.showCursor();
-    this.terminal.stop();
+    this.terminal.exitRawMode();
+    this._isStarted = false;
   }
-
-  // ─── Input ───────────────────────────────────────────────────────────────────
 
   _handleInput(data) {
-    // Handle mouse click events (format: \x1b[<num>;<num>M)
-    if (data.startsWith('\x1b[') && data.includes('M') && !data.includes(';~')) {
-      // Parse mouse click: \x1b[<Cb>;<Cx>;<Cm>M
-      // Cb = button, Cx = x, Cm = y (1-indexed)
-      const match = data.match(/\x1b\[(\d+);(\d+);(\d+)M/);
-      if (match) {
-        const button = parseInt(match[1]);
-        const x = parseInt(match[2]) - 1;  // Convert to 0-indexed
-        const y = parseInt(match[3]) - 1;
-        
-        // Only handle left click (button 0) on clickable components
-        if (button === 0) {
-          // Check ModeTab first (it's usually at the top, around y=0 or y=1)
-          for (const child of this.children) {
-            if (child instanceof ModeTab && (y <= 1)) {
-              if (child.handleClick(x)) {
-                this.requestRender();
-                return;
-              }
-            }
-          }
-        }
-      }
+    if (!this._isStarted) return;
+    if (this._focusedComponent && this._focusedComponent.handleInput) {
+      this._focusedComponent.handleInput(data.toString());
     }
-    
-    if (this._focusedComponent?.handleInput) {
-      this._focusedComponent.handleInput(data);
-    }
-  }
-
-  _handleResize() {
-    this._prevLines = null;
-    this._prevWidth = -1;
     this.requestRender();
   }
 
-  // ─── Rendering ───────────────────────────────────────────────────────────────
+  _handleKeypress(str, key) {
+    if (!this._isStarted) return;
+    
+    // Global scroll keys
+    if (key.name === 'pageup') {
+      this.scrollOffset = Math.min(this.scrollOffset + 5, 2000);
+      this.requestRender();
+      return;
+    }
+    if (key.name === 'pagedown') {
+      this.scrollOffset = Math.max(0, this.scrollOffset - 5);
+      this.requestRender();
+      return;
+    }
 
-  _collectLines(width) {
-    const lines = [];
-    for (const child of this.children) {
-      try {
-        const childLines = child.render(width);
-        for (const line of childLines) {
-          lines.push(line);
-        }
-      } catch (err) {
-        lines.push(`[render error: ${err.message}]`);
+    if (this._focusedComponent && this._focusedComponent.handleKeypress) {
+      if (this._focusedComponent.handleKeypress(str, key)) {
+        this.requestRender();
+        return;
       }
     }
-    return lines;
   }
 
-  _render() {
-    if (!this._started) return;
+  requestRender() {
+    if (!this._isStarted) return;
+    process.nextTick(() => this.render());
+  }
+
+  fullRender() {
+    this._lastLines = [];
+    this.terminal.clearScreen();
+    this.render();
+  }
+
+  render() {
+    if (!this._isStarted) return;
 
     const width = this.terminal.columns;
-    const currentLines = this._collectLines(width);
+    const height = this.terminal.rows;
 
-    this.terminal.beginSync?.();
-    // Full redraw each frame for stability across terminals.
-    // Differential rendering was causing stale line artifacts while typing.
-    this.terminal.clearScreen();
-    this.terminal.write(currentLines.join('\r\n') + '\r\n');
-    this._renderedLineCount = currentLines.length;
+    const topLines = [];
+    for (const comp of this.topSticky) topLines.push(...comp.render(width));
 
-    this.terminal.endSync?.();
-    this._prevLines = currentLines;
-    this._prevWidth = width;
+    const bottomLines = [];
+    for (const comp of this.bottomSticky) bottomLines.push(...comp.render(width));
+
+    const availableHeight = height - topLines.length - bottomLines.length;
+    
+    let bodyLines = [];
+    for (const comp of this.children) {
+      if (this.topSticky.includes(comp) || this.bottomSticky.includes(comp)) continue;
+      bodyLines.push(...comp.render(width));
+    }
+
+    const end = Math.max(availableHeight, bodyLines.length - this.scrollOffset);
+    const start = Math.max(0, end - availableHeight);
+    const visibleBody = bodyLines.slice(start, end);
+
+    const finalLines = [...topLines, ...visibleBody, ...bottomLines];
+    while (finalLines.length < height) finalLines.push('');
+
+    // Differential rendering loop
+    let cursorX = -1, cursorY = -1;
+
+    for (let y = 0; y < height; y++) {
+      let line = finalLines[y] || '';
+      
+      // Look for cursor marker BEFORE stripping ansi/marker for output
+      const markerIdx = line.indexOf(CURSOR_MARKER);
+      if (markerIdx !== -1) {
+        // Position is index of marker relative to visible text
+        cursorX = stripAnsi(line.slice(0, markerIdx)).length;
+        cursorY = y;
+        // Strip the marker for visual output
+        line = line.replace(CURSOR_MARKER, '');
+      }
+
+      if (line !== this._lastLines[y]) {
+        this.terminal.moveCursor(0, y);
+        this.terminal.write('\x1b[2K' + line);
+        this._lastLines[y] = line;
+      }
+    }
+
+    if (cursorX !== -1) {
+      this.terminal.moveCursor(cursorX, cursorY);
+      this.terminal.showCursor();
+    } else {
+      this.terminal.hideCursor();
+    }
   }
 }

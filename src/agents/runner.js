@@ -9,7 +9,7 @@
 import { Agent } from '../agent.js';
 import { getAgentDef } from './registry.js';
 import { getToolSchemas, getTool } from '../tools.js';
-import { streamChat } from '../gemini.js';
+import { streamChat } from '../providers/index.js';
 import { getConfig } from '../config.js';
 import os from 'os';
 import fs from 'fs';
